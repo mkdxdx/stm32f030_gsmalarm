@@ -78,6 +78,8 @@
 #define ARMED_OFF()		GPIO_SetBits(LED_PORT, LED_ARMED)
 #define STATUS_ON()		GPIO_ResetBits(LED_PORT, LED_STATUS)
 #define STATUS_OFF()	GPIO_SetBits(LED_PORT, LED_STATUS)
+#define ACTION_ON()		GPIO_SetBits(ACTION_PORT, ACTION_PIN)
+#define ACTION_OFF()	GPIO_ResetBits(ACTION_PORT, ACTION_PIN)
 
 
 enum E_ALARM_STATE {
@@ -358,7 +360,7 @@ void AlarmLoop(void) {
 	switch (ALARM_STATE) {
 	case AS_IDLE: {
 		ARMED_OFF();
-
+		ACTION_OFF();
 		// do nothing
 		// if alarm is armed, switch to AS_ARMING
 		if (TRIP_STATE != 0) {
@@ -404,6 +406,7 @@ void AlarmLoop(void) {
 		TRIP_STATE = 0x00;
 		STATUS_OFF();
 		ARMED_ON();
+		ACTION_OFF();
 		while ((GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0)) {
 			if (TRIP_STATE != 0) {
 				delay_ms(200);
@@ -432,6 +435,7 @@ void AlarmLoop(void) {
 		// wait 30s and switch ALARM_STATE to AS_ARMED
 		if (ALARM_STATE == AS_TRIPPED) {
 			GSMSendSMS(GSM_TXT_TRIPPED,GSM_TXT_OWNNUM);
+			ACTION_ON();
 			i = ALARM_TIMEOUT*5;
 			while (1) {
 				if (i <= 1) {
