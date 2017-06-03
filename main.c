@@ -434,7 +434,9 @@ void AlarmLoop(void) {
 		// turn ACTION/RELAY channel on
 		// wait 30s and switch ALARM_STATE to AS_ARMED
 		if (ALARM_STATE == AS_TRIPPED) {
-			GSMSendSMS(GSM_TXT_TRIPPED,GSM_TXT_OWNNUM);
+			if (GSM_STATUS == GS_AVAILABLE) {
+				GSMSendSMS(GSM_TXT_TRIPPED,GSM_TXT_OWNNUM);
+			}
 			ACTION_ON();
 			i = ALARM_TIMEOUT*5;
 			while (1) {
