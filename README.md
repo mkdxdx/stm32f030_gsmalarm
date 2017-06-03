@@ -12,6 +12,8 @@ Usage:
 TRIP_CHx can be connected to open drain of a PIR sensor, a reed switch or something else that will pull line to ground once triggered.
 KEY_PIN can be any kind of switch that pulls line to ground once activated to arm the system.
 
+In IDLE state, LED_STATUS blinks if any of the channels are tripped to test if circuits work properly. In ARMING LED_ARMED will blink during arming interval and then turns on in ARMED state. During transition from ARMED to TRIPPED states LED_STATUS turns on and after interval LED_ARMED and LED_STATUS will blink rapidly during notification phase.
+
 You have to provide gsmconf.h file with format described in main.c with owner's number where notifications go.
 
 Later I2C sensor and/or EEPROM will be added.
