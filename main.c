@@ -5,7 +5,7 @@
 #include "delay.h"
 
 // constant like owner's number lies here in format:
-// const char GSM_TXT_OWNNUM[] = "AT+CMGS=\"+phonenumber\"";
+// const char GSM_TXT_OWNNUM[] = "+phonenumber";
 #include "gsmconf.h"
 
 #include "stm32f0xx_exti.h"
@@ -125,7 +125,7 @@ const char GSM_RSP_ERROR[] = "ERROR\r\n";
 
 const char GSM_CMD_AT[] = "AT";
 const char GSM_CMD_USSD[] = "AT+CUSD=";
-const char GSM_CMD_SMSSend[] = "AT+CMGS=";
+const char GSM_CMD_SMSSend[] = "AT+CMGS=\"";
 const char GSM_CMD_MSGF[] = "AT+CMGF=";
 const char GSM_TXT_ARMED[] = "Alarm armed.";
 const char GSM_TXT_TRIPPED[] = "Alarm tripped!";
@@ -497,8 +497,12 @@ void GSMReset(void) {
 
 
 void GSMSendSMS(char * text, char * number) {
+	char sendcmd[50];
 	if (GSMSendCmd("AT+CMGF=1") == GR_OK) {
-		GSMSendCmd(number);
+		strcpy(sendcmd,GSM_CMD_SMSSend);
+		strcat(sendcmd,number);
+		strcat(sendcmd,"\"");
+		GSMSendCmd(sendcmd);
 		if (strstr(rxbuf,">") != NULL) {
 			USendStr(text);
 			USend(26);
