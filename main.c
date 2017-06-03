@@ -495,9 +495,6 @@ void GSMReset(void) {
 	delay_s(2);
 }
 
-enum E_GSMSTATUS GSMGetStatus() {
-
-}
 
 void GSMSendSMS(char * text, char * number) {
 	if (GSMSendCmd("AT+CMGF=1") == GR_OK) {
