@@ -20,3 +20,4 @@ Later I2C sensor and/or EEPROM will be added.
 
 Schematics will be added soon after i throw everything in enclosure.
 
+Build looks like this https://youtu.be/tgss5XSQ9zk
