@@ -14,10 +14,13 @@ KEY_PIN can be any kind of switch that pulls line to ground once activated to ar
 
 In IDLE state, LED_STATUS blinks if any of the channels are tripped to test if circuits work properly. In ARMING LED_ARMED will blink during arming interval and then turns on in ARMED state. During transition from ARMED to TRIPPED states LED_STATUS turns on and after interval LED_ARMED and LED_STATUS will blink rapidly during notification phase.
 
-You have to provide gsmconf.h file with format described in main.c with owner's number where notifications go.
+Binding alarm to owner's number and/or setting delay values:
+1. Restart alarm and wait until it boots (STATUS led will be lit up only). Do not turn arming state on.
+2. Send an SMS to alarm's number with format "TARM:XXX,TTRIP:XXX,TALRM:XXX" where XXX is a number between 0 and 255 in seconds. TARM sets arming period, TTRIP sets tripping delay (before turning siren on), TALRM defines how long siren will sound.
+3. Short CONF_PIN to ground (by default its PA14). If STATUS led blinks quikcly few times, alarm is configured and will send sms with parameters confirmation.
+4. If STATUS led doesn't blink, start process over.
+5. On success turn off and on power to confirm that alarm sends messages to correct number.
 
-Later I2C sensor and/or EEPROM will be added.
-
-Schematics will be added soon after i throw everything in enclosure.
+Schematics will be added soon.
 
 Build looks like this https://youtu.be/tgss5XSQ9zk
