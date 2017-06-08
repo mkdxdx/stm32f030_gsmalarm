@@ -4,10 +4,6 @@
 #include "stm32f0xx.h"
 #include "delay.h"
 
-// constant like owner's number lies here in format:
-// const char GSM_TXT_OWNNUM[] = "+phonenumber";
-#include "gsmconf.h"
-
 #include "stm32f0xx_exti.h"
 #include "stm32f0xx_gpio.h"
 #include "stm32f0xx_i2c.h"
@@ -45,6 +41,10 @@
 #define KEY_RCC		RCC_AHBPeriph_GPIOA
 #define KEY_PIN		GPIO_Pin_7
 
+#define CONF_PORT	GPIOA
+#define CONF_RCC	RCC_AHBPeriph_GPIOA
+#define CONF_PIN	GPIO_Pin_14
+
 
 #define I2C_If			I2C1
 #define I2C_IfPort		GPIOA
@@ -69,9 +69,9 @@
 #define RXBUF_LEN		255
 #define RXBUF_START		0
 
-#define GSM_MAX_CMD_TIMEOUT	7	// timeouts in seconds
-#define TRIPPED_TIMEOUT		20
-#define ARMING_TIMEOUT		30
+#define GSM_MAX_CMD_TIMEOUT	1	// timeouts in seconds
+#define TRIPPED_TIMEOUT		10
+#define ARMING_TIMEOUT		20
 #define ALARM_TIMEOUT		60
 
 #define ARMED_ON()		GPIO_ResetBits(LED_PORT, LED_ARMED)
@@ -128,13 +128,24 @@ const char GSM_RSP_ERROR[] = "ERROR\r\n";
 const char GSM_CMD_AT[] = "AT";
 const char GSM_CMD_USSD[] = "AT+CUSD=";
 const char GSM_CMD_SMSSend[] = "AT+CMGS=\"";
-const char GSM_CMD_MSGF[] = "AT+CMGF=";
+const char GSM_CMD_MSGF[] = "AT+CMGF=1";
+const char GSM_CMD_LISTSMSALL[] = "AT+CMGL=\"ALL\"";
+const char GSM_CMD_CLRMSG[] = "AT+CMGDA=\"DEL ALL\"";
+
+const char GSM_TXT_MSGUNREAD[] = "REC UNREAD";
 const char GSM_TXT_ARMED[] = "Alarm armed.";
 const char GSM_TXT_TRIPPED[] = "Alarm tripped!";
 const char GSM_TXT_INIT[] = "Alarm started.";
+const char GSM_TXT_SAVCONF[] = " - Config saved.";
 const char GSM_TXT_CHANN[] = "CHANNEL";
 const char GSM_TXT_CHREED[] = "REED";
 const char GSM_TXT_CHPIR[] = "PIR";
+
+// eeprom address of saved data
+const uint8_t ADDR_T_TRIPPED = 	0x10;
+const uint8_t ADDR_T_ARMING =  	0x12;
+const uint8_t ADDR_T_ALARM =	0x14;
+const uint8_t ADDR_T_OWNUM =	0x16;
 
 volatile enum E_ALARM_STATE ALARM_STATE = AS_IDLE;
 volatile enum E_GSMSTATUS GSM_STATUS = GS_NONE;
@@ -144,6 +155,12 @@ volatile uint8_t TRIP_STATE	= 0x00;
 volatile uint16_t rxbuf_index = RXBUF_START;
 volatile char rxbuf[RXBUF_LEN];
 volatile char strval[5];
+
+// owner number and delay values
+volatile char ownnum[20];
+volatile uint8_t T_TRIPPED=	TRIPPED_TIMEOUT;
+volatile uint8_t T_ARMING= 	ARMING_TIMEOUT;
+volatile uint8_t T_ALARM=	ALARM_TIMEOUT;
 
 // interrupt handlers
 
@@ -159,8 +176,6 @@ void USART1_IRQHandler(void) {
 		} else {
 			rxbuf[rxbuf_index] = '\0';
 		}
-		ARMED_ON();
-		STATUS_ON();
 	}
 
 	if (USART_GetITStatus(USART_If,USART_IT_TC)!=RESET) {
@@ -198,26 +213,29 @@ int main(void)
     }
 }
 
+
+
 void Init(void) {
 	Delay_Init(48);
 
 	InitRCC();
 	InitGPIO();
 	InitComm(115200);
+	EE_I2C_Init();
 
 	InitIT();
 	InitEXTI();
 	__enable_irq();
 
 	AlarmInit();
+	LoadConfig();
 	InitGSM();
 }
 
 
 void InitRCC(void) {
 	RCC_APB2PeriphClockCmd((USART_IfRCC| RCC_APB2Periph_SYSCFG), ENABLE);
-	RCC_AHBPeriphClockCmd((USART_IfPortRCC | I2C_IfPortRCC | TRIP_RCC | LED_RCC | SIM_RCC | ACTION_RCC | KEY_RCC), ENABLE);
-
+	RCC_AHBPeriphClockCmd((USART_IfPortRCC | I2C_IfPortRCC | TRIP_RCC | LED_RCC | SIM_RCC | ACTION_RCC | KEY_RCC | CONF_RCC), ENABLE);
 }
 
 
@@ -264,6 +282,16 @@ void InitGPIO(void) {
 	gis.GPIO_Mode = GPIO_Mode_IN;
 	gis.GPIO_PuPd = GPIO_PuPd_UP;
 	GPIO_Init(KEY_PORT, &gis);
+
+
+	// set conf pin
+	GPIO_StructInit(&gis);
+	gis.GPIO_Pin = (CONF_PIN);
+	gis.GPIO_Speed = GPIO_Speed_50MHz;
+	gis.GPIO_Mode = GPIO_Mode_IN;
+	gis.GPIO_PuPd = GPIO_PuPd_UP;
+	GPIO_Init(CONF_PORT, &gis);
+
 
 	// set alternate interface functions
 	GPIO_PinAFConfig(USART_IfPort, USART_PS_TX, USART_GPIO_AF);
@@ -336,23 +364,25 @@ void InitGSM(void) {
 		if (GSMSendCmd("AT") == GR_OK) {
 			GSM_STATUS = GS_AVAILABLE;
 		} else {
-			delay_s(2);
+			delay_s(1);
 		}
 	}
 
 	if (GSM_STATUS == GS_AVAILABLE) {
-		GSMSendCmd("AT+CMGDA=\"DEL ALL\"");
-		GSMSendSMS(GSM_TXT_INIT,GSM_TXT_OWNNUM);
+		GSMSendCmd(GSM_CMD_MSGF);
+		delay_s(1);
+		GSMSendCmd(GSM_CMD_CLRMSG);
+		delay_s(1);
+		GSMSendSMS(GSM_TXT_INIT,ownnum);
+		delay_s(5);
 	}
+
 }
 
 void AlarmInit(void) {
 	ALARM_STATE = AS_IDLE;
 	ARMED_ON();
 	STATUS_ON();
-	delay_s(5);
-	ARMED_OFF();
-	STATUS_OFF();
 }
 
 void AlarmLoop(void) {
@@ -361,28 +391,35 @@ void AlarmLoop(void) {
 	case AS_IDLE: {
 		ARMED_OFF();
 		ACTION_OFF();
+		if (GPIO_ReadInputDataBit(CONF_PORT, CONF_PIN) == 0) {
+			STATUS_OFF();
+			CheckConfMessages();
+			STATUS_ON();
+		} else {
+			if (TRIP_STATE != 0) {
+				STATUS_OFF();
+				delay_ms(500);
+				STATUS_ON();
+				delay_ms(500);
+			} else {
+				STATUS_ON();
+			}
+
+			if (GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0) {
+				delay_s(1);
+				ALARM_STATE = AS_ARMING;
+			}
+
+		}
 		// do nothing
 		// if alarm is armed, switch to AS_ARMING
-		if (TRIP_STATE != 0) {
-			STATUS_OFF();
-			delay_ms(500);
-			STATUS_ON();
-			delay_ms(500);
-		} else {
-			STATUS_ON();
-		}
-
-		if (GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0) {
-			delay_s(1);
-			ALARM_STATE = AS_ARMING;
-		}
 		break;
 	}
 	case AS_ARMING:
 	{
 		STATUS_ON();
 		// wait for 30s and then set ALARM_STATE to AS_ARMED
-		uint8_t i = ARMING_TIMEOUT;
+		uint8_t i = T_ARMING;
 		while ((GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0) && (i--)) {
 			delay_ms(500);
 			ARMED_ON();
@@ -407,18 +444,23 @@ void AlarmLoop(void) {
 		STATUS_OFF();
 		ARMED_ON();
 		ACTION_OFF();
-		while ((GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0)) {
-			if (TRIP_STATE != 0) {
-				delay_ms(200);
-				ALARM_STATE = AS_TRIPPED;
-				break;
+
+
+		while (ALARM_STATE == AS_ARMED) {
+			if ((GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 1)) {
+				ALARM_STATE = AS_IDLE;
+			} else {
+				if (TRIP_STATE != 0) {
+					ALARM_STATE = AS_TRIPPED;
+					break;
+				}
 			}
 		}
 		break;
 	}
 	case AS_TRIPPED: {
 		STATUS_ON();
-		uint16_t i = TRIPPED_TIMEOUT;
+		uint16_t i = T_TRIPPED;
 		while (i--) {
 			if (GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == SET) {
 				ALARM_STATE = AS_IDLE;
@@ -434,11 +476,8 @@ void AlarmLoop(void) {
 		// turn ACTION/RELAY channel on
 		// wait 30s and switch ALARM_STATE to AS_ARMED
 		if (ALARM_STATE == AS_TRIPPED) {
-			if (GSM_STATUS == GS_AVAILABLE) {
-				GSMSendSMS(GSM_TXT_TRIPPED,GSM_TXT_OWNNUM);
-			}
-			ACTION_ON();
-			i = ALARM_TIMEOUT*5;
+			TrippedAction();
+			i = T_ALARM*5;
 			while (1) {
 				if (i <= 1) {
 					ALARM_STATE = AS_ARMING;
@@ -465,6 +504,167 @@ void AlarmLoop(void) {
 	}
 }
 
+void CheckConfMessages(void) {
+	// poll sim module for availability
+	if (GSMSendCmd(GSM_CMD_AT) == GR_OK) {
+		// set text mode
+		if (GSMSendCmd(GSM_CMD_MSGF) == GR_OK) {
+			// check if any messages are in memory
+			if (GSMSendCmd(GSM_CMD_LISTSMSALL) == GR_OK) {
+				// if messages found, parse first
+				if (strstr(rxbuf,GSM_TXT_MSGUNREAD) != NULL) {
+					// if receive successful, try to parse it
+					ParseConfMessage(rxbuf);
+					// clear messages if some present
+				}
+				GSMSendCmd(GSM_CMD_CLRMSG);
+			}
+		}
+	}
+	delay_s(5);
+}
+
+void ParseConfMessage(char * buffer) {
+	// if any of received messages matches config format
+	// save sender number as owner number
+	// save delay values for
+	// TARMXXX (arming delay in seconds)
+	// TTRIPXXX (tripping delay in seconds)
+	// TALRMXXX (alarm delay in seconds)
+
+	// composed message
+	char msg[50];
+
+	// temporary number storage
+	char numtemp[20];
+
+
+	uint8_t i = 0;
+	for (i=0;i<20;i++) {
+		numtemp[i] = '\0';
+	}
+	i = 0;
+	char *p;
+	// find number start
+	p = strstr(buffer,"\",\"+");
+	if (p != NULL) {
+		// skip first three symbols
+		p++;
+		p++;
+		p++;
+		do {
+			numtemp[i] = *p++;
+			i++;
+		} while (*p != '"');
+	}
+
+	p = strstr(buffer,"TARM");
+	if (p != NULL) {
+		p++;
+		p++;
+		p++;
+		p++;
+		uint8_t v = (uint8_t)atoi(p);
+		if (v>0) {
+			T_ARMING = v;
+		}
+
+	}
+
+	p = strstr(buffer,"TTRIP");
+	if (p != NULL) {
+		p++;
+		p++;
+		p++;
+		p++;
+		p++;
+		uint8_t v = (uint8_t)atoi(p);
+		if (v>0) {
+			T_TRIPPED = v;
+		}
+	}
+
+	p = strstr(buffer,"TALRM");
+	if (p != NULL) {
+		p++;
+		p++;
+		p++;
+		p++;
+		p++;
+		uint8_t v = (uint8_t)atoi(p);
+		if (v>0) {
+			T_ALARM = v;
+		}
+	}
+
+	// if any of the parameters matched, save number
+	if (p != NULL) {
+		strcpy(ownnum,numtemp);
+		uint8_t i = 0;
+		for (i = 0; i<5; i++) {
+			BlinkStatus(100);
+		}
+		BlinkStatus(100);
+		SaveConf();
+
+		// send acknowledgement
+		strcpy(msg,"ARM:");
+		itoa(T_ARMING,strval,10);
+		strcat(msg,strval);
+
+		strcat(msg,",TRIP:");
+		itoa(T_TRIPPED,strval,10);
+		strcat(msg,strval);
+
+		strcat(msg,",ALRM:");
+		itoa(T_ALARM,strval,10);
+		strcat(msg,strval);
+
+		strcat(msg,GSM_TXT_SAVCONF);
+
+		GSMSendSMS(msg,ownnum);
+		delay_s(5);
+
+	}
+}
+
+void LoadConfig(void) {
+	// load owner's number and delay values from eeprom
+	T_TRIPPED = EE_I2C_ReadAt(ADDR_T_TRIPPED);
+	T_ARMING = EE_I2C_ReadAt(ADDR_T_ARMING);
+	T_ALARM = EE_I2C_ReadAt(ADDR_T_ALARM);
+
+	char c;
+	uint8_t addr = ADDR_T_OWNUM;
+	uint8_t i = 0;
+	do {
+		c = EE_I2C_ReadAt(addr++);
+		ownnum[i] = c;
+		i++;
+	} while (c != '\0');
+}
+
+void SaveConf(void) {
+	// save owner's number and delay values to eeprom
+	EE_I2C_WriteAt(ADDR_T_TRIPPED,T_TRIPPED);
+	EE_I2C_WriteAt(ADDR_T_ARMING,T_ARMING);
+	EE_I2C_WriteAt(ADDR_T_ALARM,T_ALARM);
+	EE_I2C_WriteStringAt(ADDR_T_OWNUM, ownnum);
+}
+
+void BlinkStatus(uint16_t ms) {
+	STATUS_OFF();
+	delay_ms(ms);
+	STATUS_ON();
+	delay_ms(ms);
+}
+
+void TrippedAction(void) {
+	ACTION_ON();
+	if (GSM_STATUS == GS_AVAILABLE) {
+		GSMSendSMS(GSM_TXT_TRIPPED,ownnum);
+	}
+}
 
 
 
@@ -504,16 +704,19 @@ void GSMReset(void) {
 
 void GSMSendSMS(char * text, char * number) {
 	char sendcmd[50];
-	if (GSMSendCmd("AT+CMGF=1") == GR_OK) {
-		strcpy(sendcmd,GSM_CMD_SMSSend);
-		strcat(sendcmd,number);
-		strcat(sendcmd,"\"");
-		GSMSendCmd(sendcmd);
-		if (strstr(rxbuf,">") != NULL) {
-			USendStr(text);
-			USend(26);
-		}
+	uint8_t i;
+	for (i = 0; i<50; i++) {
+		sendcmd[i] = '\0';
 	}
+	strcpy(sendcmd,GSM_CMD_SMSSend);
+	strcat(sendcmd,number);
+	strcat(sendcmd,"\"");
+	GSMSendCmd(sendcmd);
+	if (strstr(rxbuf,">") != NULL) {
+		USendStr(text);
+		USend(26);
+	}
+
 }
 
 enum E_GSMRESULT GSMSendCmd(const char *cmd) {
