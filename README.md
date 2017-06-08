@@ -28,10 +28,10 @@ Parts used:
 1. STM32F030F4P6 microcontroller (on a breakout board with AMS1117 3.3V regulator).
 2. SIM800L module.
 3. S24CS01A IIC EEPROM (others may have different write algorithm like Atmel's which didn't work for me).
-4. ULN2003 (for turning stuff on).
-5. PIR sensor.
-6. DC12 power supply.
-7. Siren with waveform generator.
+4. ULN2003 driver IC (for turning stuff on).
+5. PIR sensor (preferable with supply voltage of around 3-5V like they offer for arduinos).
+6. DC12V 3A power supply.
+7. Siren with waveform generator (the louder the better).
 8. 2n2222 transistor (inverts PIR sensor signal which is high when it is triggered).
 9. 2x4.7k, 1x1k, 2x300 Ohm resistors.
 10. Variable step-down converter (must handle up to 2A of current and must have output of around 3.8 to 4.2V for SIM module).
