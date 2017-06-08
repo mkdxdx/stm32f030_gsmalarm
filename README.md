@@ -16,7 +16,7 @@ In IDLE state, LED_STATUS blinks if any of the channels are tripped to test if c
 
 Binding alarm to owner's number and/or setting delay values:
 1. Restart alarm and wait until it boots (STATUS led will be lit up only). Do not turn arming state on.
-2. Send an SMS to alarm's number with format "TARM:XXX,TTRIP:XXX,TALRM:XXX" where XXX is a number between 0 and 255 in seconds. TARM sets arming period, TTRIP sets tripping delay (before turning siren on), TALRM defines how long siren will sound.
+2. Send an SMS to alarm's number with format "TARM:XXX,TTRIP:XXX,TALRM:XXX" where XXX is a number between 1 and 255 in seconds. TARM sets arming period, TTRIP sets tripping delay (before turning siren on), TALRM defines how long siren will sound.
 3. Short CONF_PIN to ground (by default its PA14). If STATUS led blinks quikcly few times, alarm is configured and will send sms with parameters confirmation.
 4. If STATUS led doesn't blink, start process over.
 5. On success turn off and on power to confirm that alarm sends messages to correct number.
