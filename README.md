@@ -34,5 +34,7 @@ Parts used:
 7. Siren with waveform generator (the louder the better).
 8. 2n2222 transistor (inverts PIR sensor signal which is high when it is triggered).
 9. 2x4.7k, 1x1k, 2x300 Ohm resistors.
+10. Normally open reed switch.
 10. Variable step-down converter (must handle up to 2A of current and must have output of around 3.8 to 4.2V for SIM module).
 11. Perfboard and lots of wire.
+12. Electrical box.
