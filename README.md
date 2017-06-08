@@ -27,7 +27,7 @@ Build looks like this https://youtu.be/tgss5XSQ9zk
 Parts used: 
 1. STM32F030F4P6 microcontroller (on a breakout board with AMS1117 3.3V regulator).
 2. SIM800L module.
-3. S24CS01A IIC EEPROM (others may have different write algorithm like Atmel's which didn't work for me).
+3. S24CS01A IIC EEPROM (or any algorithm-compatible one, Atmel's eeprom didnt work for me).
 4. ULN2003 driver IC (for turning stuff on).
 5. PIR sensor (preferable with supply voltage of around 3-5V like they offer for arduinos).
 6. DC12V 3A power supply.
