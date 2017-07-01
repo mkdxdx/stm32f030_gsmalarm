@@ -45,6 +45,10 @@
 #define CONF_RCC	RCC_AHBPeriph_GPIOA
 #define CONF_PIN	GPIO_Pin_14
 
+#define NOSMS_PORT	GPIOA
+#define NOSMS_RCC	RCC_AHBPeriph_GPIOA
+#define NOSMS_PIN	GPIO_Pin_13
+
 
 #define I2C_If			I2C1
 #define I2C_IfPort		GPIOA
@@ -73,11 +77,14 @@
 #define TRIPPED_TIMEOUT		10
 #define ARMING_TIMEOUT		20
 #define ALARM_TIMEOUT		60
+#define RETRIP_TIMEOUT		10
 
 #define ARMED_ON()		GPIO_ResetBits(LED_PORT, LED_ARMED)
 #define ARMED_OFF()		GPIO_SetBits(LED_PORT, LED_ARMED)
+
 #define STATUS_ON()		GPIO_ResetBits(LED_PORT, LED_STATUS)
 #define STATUS_OFF()	GPIO_SetBits(LED_PORT, LED_STATUS)
+
 #define ACTION_ON()		GPIO_SetBits(ACTION_PORT, ACTION_PIN)
 #define ACTION_OFF()	GPIO_ResetBits(ACTION_PORT, ACTION_PIN)
 
@@ -102,10 +109,16 @@ enum E_GSMSTATUS {
 	GS_LOWPWR
 };
 
+enum E_NOTIFYTYPE {
+	NT_NONOTIFY = 0,
+	NT_ALWAYSNOTIFY
+};
+
 // prot
 void Init(void);
 void InitRCC(void);
 void InitGPIO(void);
+void InitAuxGPIO(void);
 void InitIT(void);
 void InitEXTI(void);
 void InitComm(uint32_t baud);
@@ -117,6 +130,7 @@ void ClrBuffer(void);
 void USendStr(char *str);
 void USend(uint8_t data);
 void delay_s(uint8_t s);
+void STATUS_TOGGLE(void);
 enum E_GSMRESULT GSMSendCmd(const char *cmd);
 
 
@@ -145,25 +159,29 @@ const char GSM_TXT_CHPIR[] = "PIR";
 const uint8_t ADDR_T_TRIPPED = 	0x10;
 const uint8_t ADDR_T_ARMING =  	0x12;
 const uint8_t ADDR_T_ALARM =	0x14;
-const uint8_t ADDR_T_OWNUM =	0x16;
+const uint8_t ADDR_T_RETRIP = 	0x16;
+const uint8_t ADDR_T_OWNUM =	0x18;
 
-volatile enum E_ALARM_STATE ALARM_STATE = AS_IDLE;
-volatile enum E_GSMSTATUS GSM_STATUS = GS_NONE;
-
-volatile uint8_t TRIP_STATE	= 0x00;
 
 volatile uint16_t rxbuf_index = RXBUF_START;
 volatile char rxbuf[RXBUF_LEN];
 volatile char strval[5];
 
-// owner number and delay values
-volatile char ownnum[20];
-volatile uint8_t T_TRIPPED=	TRIPPED_TIMEOUT;
-volatile uint8_t T_ARMING= 	ARMING_TIMEOUT;
-volatile uint8_t T_ALARM=	ALARM_TIMEOUT;
+struct T_ALARM {
+	uint8_t TRIP_STATE;
+	uint8_t T_TRIPPED;
+	uint8_t T_ARMING;
+	uint8_t T_ALARM;
+	uint8_t T_RETRIP;
+	enum E_ALARM_STATE ALARM_STATE;
+	enum E_GSMSTATUS GSM_STATUS;
+	enum E_NOTIFYTYPE NOTIFY_STATUS;
+	char OWN_NUMBER[20];
+};
+
+struct T_ALARM G_Alarm;
 
 // interrupt handlers
-
 void USART1_IRQHandler(void) {
 	if (USART_GetITStatus(USART_If,USART_IT_RXNE)!=RESET) {
 
@@ -187,18 +205,18 @@ void USART1_IRQHandler(void) {
 void EXTI0_1_IRQHandler(void) {
 	if (EXTI_GetITStatus(EXTI_Line0) != RESET) {
 		if (GPIO_ReadInputDataBit(TRIP_PORT, TRIP_CH1) == 0) {
-			TRIP_STATE |= 1<<TRIP_1;
+			G_Alarm.TRIP_STATE |= (uint8_t)1<<TRIP_1;
 		} else {
-			TRIP_STATE &= (~(1<<TRIP_1));
+			G_Alarm.TRIP_STATE &= (uint8_t)(~(1<<TRIP_1));
 		}
 		EXTI_ClearITPendingBit(EXTI_Line0);
 	}
 
 	if (EXTI_GetITStatus(EXTI_Line1) != RESET) {
 		if (GPIO_ReadInputDataBit(TRIP_PORT, TRIP_CH2) == 0) {
-			TRIP_STATE |= 1<<TRIP_2;
+			G_Alarm.TRIP_STATE |= (uint8_t)1<<TRIP_2;
 		} else {
-			TRIP_STATE &= (~(1<<TRIP_2));
+			G_Alarm.TRIP_STATE &= (uint8_t)(~(1<<TRIP_2));
 		}
 		EXTI_ClearITPendingBit(EXTI_Line1);
 	}
@@ -229,7 +247,15 @@ void Init(void) {
 
 	AlarmInit();
 	LoadConfig();
+
 	InitGSM();
+	InitAuxGPIO();
+
+	if ((G_Alarm.GSM_STATUS == GS_AVAILABLE) && (G_Alarm.NOTIFY_STATUS == NT_ALWAYSNOTIFY)) {
+		GSMSendSMS(GSM_TXT_INIT,G_Alarm.OWN_NUMBER);
+		delay_s(5);
+	}
+
 }
 
 
@@ -284,15 +310,6 @@ void InitGPIO(void) {
 	GPIO_Init(KEY_PORT, &gis);
 
 
-	// set conf pin
-	GPIO_StructInit(&gis);
-	gis.GPIO_Pin = (CONF_PIN);
-	gis.GPIO_Speed = GPIO_Speed_50MHz;
-	gis.GPIO_Mode = GPIO_Mode_IN;
-	gis.GPIO_PuPd = GPIO_PuPd_UP;
-	GPIO_Init(CONF_PORT, &gis);
-
-
 	// set alternate interface functions
 	GPIO_PinAFConfig(USART_IfPort, USART_PS_TX, USART_GPIO_AF);
 	GPIO_PinAFConfig(USART_IfPort, USART_PS_RX, USART_GPIO_AF);
@@ -309,6 +326,33 @@ void InitGPIO(void) {
 	gis.GPIO_Mode = GPIO_Mode_AF;
 	gis.GPIO_PuPd = GPIO_PuPd_NOPULL;
 	GPIO_Init(USART_IfPort, &gis);
+
+}
+
+void InitAuxGPIO(void) {
+	GPIO_InitTypeDef gis;
+
+	// set conf pin
+	GPIO_StructInit(&gis);
+	gis.GPIO_Pin = (CONF_PIN);
+	gis.GPIO_Speed = GPIO_Speed_50MHz;
+	gis.GPIO_Mode = GPIO_Mode_IN;
+	gis.GPIO_PuPd = GPIO_PuPd_UP;
+	GPIO_Init(CONF_PORT, &gis);
+
+	// set notify disable pin
+	GPIO_StructInit(&gis);
+	gis.GPIO_Pin = (NOSMS_PIN);
+	gis.GPIO_Speed = GPIO_Speed_50MHz;
+	gis.GPIO_Mode = GPIO_Mode_IN;
+	gis.GPIO_PuPd = GPIO_PuPd_DOWN;
+	GPIO_Init(NOSMS_PORT, &gis);
+
+	if (GPIO_ReadInputDataBit(NOSMS_PORT, NOSMS_PIN) == 0) {
+		G_Alarm.NOTIFY_STATUS = NT_ALWAYSNOTIFY;
+	} else {
+		G_Alarm.NOTIFY_STATUS = NT_NONOTIFY;
+	}
 
 }
 
@@ -360,34 +404,40 @@ void InitGSM(void) {
 
 
 	uint8_t i = 5;
-	while ((GSM_STATUS != GS_AVAILABLE) && (i--)) {
+	while ((G_Alarm.GSM_STATUS != GS_AVAILABLE) && (i--)) {
 		if (GSMSendCmd("AT") == GR_OK) {
-			GSM_STATUS = GS_AVAILABLE;
+			G_Alarm.GSM_STATUS = GS_AVAILABLE;
 		} else {
 			delay_s(1);
 		}
 	}
 
-	if (GSM_STATUS == GS_AVAILABLE) {
+	if (G_Alarm.GSM_STATUS == GS_AVAILABLE) {
 		GSMSendCmd(GSM_CMD_MSGF);
 		delay_s(1);
 		GSMSendCmd(GSM_CMD_CLRMSG);
 		delay_s(1);
-		GSMSendSMS(GSM_TXT_INIT,ownnum);
-		delay_s(5);
 	}
 
 }
 
 void AlarmInit(void) {
-	ALARM_STATE = AS_IDLE;
+	G_Alarm.ALARM_STATE = AS_IDLE;
+	G_Alarm.GSM_STATUS = GS_NONE;
+	G_Alarm.TRIP_STATE = 0x00;
+	G_Alarm.T_ALARM = ALARM_TIMEOUT;
+	G_Alarm.T_ARMING = ARMING_TIMEOUT;
+	G_Alarm.T_TRIPPED = TRIPPED_TIMEOUT;
+	G_Alarm.T_RETRIP = RETRIP_TIMEOUT;
+
+	ACTION_OFF();
 	ARMED_ON();
 	STATUS_ON();
 }
 
 void AlarmLoop(void) {
 	// turn on TRIP LED if any of channels are tripped
-	switch (ALARM_STATE) {
+	switch (G_Alarm.ALARM_STATE) {
 	case AS_IDLE: {
 		ARMED_OFF();
 		ACTION_OFF();
@@ -396,7 +446,7 @@ void AlarmLoop(void) {
 			CheckConfMessages();
 			STATUS_ON();
 		} else {
-			if (TRIP_STATE != 0) {
+			if (G_Alarm.TRIP_STATE != 0) {
 				STATUS_OFF();
 				delay_ms(500);
 				STATUS_ON();
@@ -407,7 +457,7 @@ void AlarmLoop(void) {
 
 			if (GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0) {
 				delay_s(1);
-				ALARM_STATE = AS_ARMING;
+				G_Alarm.ALARM_STATE = AS_ARMING;
 			}
 
 		}
@@ -418,8 +468,9 @@ void AlarmLoop(void) {
 	case AS_ARMING:
 	{
 		STATUS_ON();
+		ACTION_OFF();
 		// wait for 30s and then set ALARM_STATE to AS_ARMED
-		uint8_t i = T_ARMING;
+		uint8_t i = G_Alarm.T_ARMING;
 		while ((GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0) && (i--)) {
 			delay_ms(500);
 			ARMED_ON();
@@ -428,10 +479,9 @@ void AlarmLoop(void) {
 		}
 
 		if (GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 0) {
-
-			ALARM_STATE = AS_ARMED;
+			G_Alarm.ALARM_STATE = AS_ARMED;
 		} else {
-			ALARM_STATE = AS_IDLE;
+			G_Alarm.ALARM_STATE = AS_IDLE;
 		}
 
 		break;
@@ -440,18 +490,18 @@ void AlarmLoop(void) {
 		// wait every second for a channel to trip
 		// if after 10s channel is tripped again switch ALARM_STATE to AS_TRIPPED
 		// if alarm is disarmed, switch ALARM_STATE to AS_IDLE
-		TRIP_STATE = 0x00;
+		G_Alarm.TRIP_STATE = 0x00;
 		STATUS_OFF();
 		ARMED_ON();
 		ACTION_OFF();
 
 
-		while (ALARM_STATE == AS_ARMED) {
+		while (G_Alarm.ALARM_STATE == AS_ARMED) {
 			if ((GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == 1)) {
-				ALARM_STATE = AS_IDLE;
+				G_Alarm.ALARM_STATE = AS_IDLE;
 			} else {
-				if (TRIP_STATE != 0) {
-					ALARM_STATE = AS_TRIPPED;
+				if (G_Alarm.TRIP_STATE != 0) {
+					G_Alarm.ALARM_STATE = AS_TRIPPED;
 					break;
 				}
 			}
@@ -460,30 +510,29 @@ void AlarmLoop(void) {
 	}
 	case AS_TRIPPED: {
 		STATUS_ON();
-		uint16_t i = T_TRIPPED;
+		uint16_t i = G_Alarm.T_TRIPPED;
 		while (i--) {
 			if (GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) == SET) {
-				ALARM_STATE = AS_IDLE;
+				G_Alarm.ALARM_STATE = AS_IDLE;
 				break;
 			} else {
 				delay_s(1);
 			}
-
 		}
 
 		// send alerting sms/make call
 		// sms will contain channel statuses
 		// turn ACTION/RELAY channel on
 		// wait 30s and switch ALARM_STATE to AS_ARMED
-		if (ALARM_STATE == AS_TRIPPED) {
+		if (G_Alarm.ALARM_STATE == AS_TRIPPED) {
 			TrippedAction();
-			i = T_ALARM*5;
+			i = G_Alarm.T_ALARM*5;
 			while (1) {
 				if (i <= 1) {
-					ALARM_STATE = AS_ARMING;
+					G_Alarm.ALARM_STATE = AS_ARMING;
 					break;
 				} else if (GPIO_ReadInputDataBit(KEY_PORT, KEY_PIN) != 0) {
-					ALARM_STATE = AS_IDLE;
+					G_Alarm.ALARM_STATE = AS_IDLE;
 					break;
 				} else {
 					delay_ms(100);
@@ -524,6 +573,14 @@ void CheckConfMessages(void) {
 	delay_s(5);
 }
 
+void STATUS_TOGGLE(void) {
+	if (GPIO_ReadOutputDataBit(LED_PORT, LED_STATUS) == 1) {
+		GPIO_ResetBits(LED_PORT,LED_STATUS);
+	} else {
+		 GPIO_ResetBits(LED_PORT,LED_STATUS);
+	}
+}
+
 void ParseConfMessage(char * buffer) {
 	// if any of received messages matches config format
 	// save sender number as owner number
@@ -531,9 +588,10 @@ void ParseConfMessage(char * buffer) {
 	// TARMXXX (arming delay in seconds)
 	// TTRIPXXX (tripping delay in seconds)
 	// TALRMXXX (alarm delay in seconds)
+	// TRET (alarm retrip to switch to tripped mode)
 
 	// composed message
-	char msg[50];
+	char msg[70];
 
 	// temporary number storage
 	char numtemp[20];
@@ -566,7 +624,7 @@ void ParseConfMessage(char * buffer) {
 		p++;
 		uint8_t v = (uint8_t)atoi(p);
 		if (v>0) {
-			T_ARMING = v;
+			G_Alarm.T_ARMING = v;
 		}
 
 	}
@@ -580,7 +638,7 @@ void ParseConfMessage(char * buffer) {
 		p++;
 		uint8_t v = (uint8_t)atoi(p);
 		if (v>0) {
-			T_TRIPPED = v;
+			G_Alarm.T_TRIPPED = v;
 		}
 	}
 
@@ -593,36 +651,53 @@ void ParseConfMessage(char * buffer) {
 		p++;
 		uint8_t v = (uint8_t)atoi(p);
 		if (v>0) {
-			T_ALARM = v;
+			G_Alarm.T_ALARM = v;
 		}
 	}
 
+	p = strstr(buffer,"TRET");
+		if (p != NULL) {
+			p++;
+			p++;
+			p++;
+			p++;
+			uint8_t v = (uint8_t)atoi(p);
+			if (v>0) {
+				G_Alarm.T_RETRIP = v;
+			}
+		}
+
 	// if any of the parameters matched, save number
 	if (p != NULL) {
-		strcpy(ownnum,numtemp);
+		strcpy(G_Alarm.OWN_NUMBER,numtemp);
 		uint8_t i = 0;
 		for (i = 0; i<5; i++) {
 			BlinkStatus(100);
 		}
 		BlinkStatus(100);
 		SaveConf();
+		LoadConfig();
 
 		// send acknowledgement
 		strcpy(msg,"ARM:");
-		itoa(T_ARMING,strval,10);
+		itoa(G_Alarm.T_ARMING,strval,10);
 		strcat(msg,strval);
 
 		strcat(msg,",TRIP:");
-		itoa(T_TRIPPED,strval,10);
+		itoa(G_Alarm.T_TRIPPED,strval,10);
 		strcat(msg,strval);
 
 		strcat(msg,",ALRM:");
-		itoa(T_ALARM,strval,10);
+		itoa(G_Alarm.T_ALARM,strval,10);
+		strcat(msg,strval);
+
+		strcat(msg,",RET:");
+		itoa(G_Alarm.T_RETRIP,strval,10);
 		strcat(msg,strval);
 
 		strcat(msg,GSM_TXT_SAVCONF);
 
-		GSMSendSMS(msg,ownnum);
+		GSMSendSMS(msg,G_Alarm.OWN_NUMBER);
 		delay_s(5);
 
 	}
@@ -630,26 +705,28 @@ void ParseConfMessage(char * buffer) {
 
 void LoadConfig(void) {
 	// load owner's number and delay values from eeprom
-	T_TRIPPED = EE_I2C_ReadAt(ADDR_T_TRIPPED);
-	T_ARMING = EE_I2C_ReadAt(ADDR_T_ARMING);
-	T_ALARM = EE_I2C_ReadAt(ADDR_T_ALARM);
+	G_Alarm.T_TRIPPED = EE_I2C_ReadAt(ADDR_T_TRIPPED);
+	G_Alarm.T_ARMING = EE_I2C_ReadAt(ADDR_T_ARMING);
+	G_Alarm.T_ALARM = EE_I2C_ReadAt(ADDR_T_ALARM);
+	G_Alarm.T_RETRIP = EE_I2C_ReadAt(ADDR_T_RETRIP);
 
 	char c;
 	uint8_t addr = ADDR_T_OWNUM;
 	uint8_t i = 0;
 	do {
 		c = EE_I2C_ReadAt(addr++);
-		ownnum[i] = c;
+		G_Alarm.OWN_NUMBER[i] = c;
 		i++;
 	} while (c != '\0');
 }
 
 void SaveConf(void) {
 	// save owner's number and delay values to eeprom
-	EE_I2C_WriteAt(ADDR_T_TRIPPED,T_TRIPPED);
-	EE_I2C_WriteAt(ADDR_T_ARMING,T_ARMING);
-	EE_I2C_WriteAt(ADDR_T_ALARM,T_ALARM);
-	EE_I2C_WriteStringAt(ADDR_T_OWNUM, ownnum);
+	EE_I2C_WriteAt(ADDR_T_TRIPPED,G_Alarm.T_TRIPPED);
+	EE_I2C_WriteAt(ADDR_T_ARMING,G_Alarm.T_ARMING);
+	EE_I2C_WriteAt(ADDR_T_ALARM,G_Alarm.T_ALARM);
+	EE_I2C_WriteAt(ADDR_T_RETRIP, G_Alarm.T_RETRIP);
+	EE_I2C_WriteStringAt(ADDR_T_OWNUM, G_Alarm.OWN_NUMBER);
 }
 
 void BlinkStatus(uint16_t ms) {
@@ -659,10 +736,14 @@ void BlinkStatus(uint16_t ms) {
 	delay_ms(ms);
 }
 
+void PreTrippedAction(void) {
+
+}
+
 void TrippedAction(void) {
 	ACTION_ON();
-	if (GSM_STATUS == GS_AVAILABLE) {
-		GSMSendSMS(GSM_TXT_TRIPPED,ownnum);
+	if ((G_Alarm.GSM_STATUS == GS_AVAILABLE) && (G_Alarm.NOTIFY_STATUS == NT_ALWAYSNOTIFY)) {
+		GSMSendSMS(GSM_TXT_TRIPPED,G_Alarm.OWN_NUMBER);
 	}
 }
 
